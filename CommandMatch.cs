@@ -9,26 +9,29 @@ namespace WarHams.Commands
         public AllowedCaller AllowedCaller => AllowedCaller.Both;
         public string Name => "match";
         public string Help => "Управление матчем";
-        public string Syntax => "<start/stop>";
+        public string Syntax => "<start/stop> [минуты]";
         public List<string> Aliases => new List<string>();
         public List<string> Permissions => new List<string> { "warhams.admin" };
 
         public void Execute(IRocketPlayer caller, string[] command)
         {
-            if (command.Length < 1) return;
+            if (command.Length < 1)
+            {
+                UnturnedChat.Say(caller, "Использование: /match <start/stop> [минуты]");
+                return;
+            }
 
             string action = command[0].ToLower();
             if (action == "start")
             {
-                WarHamsPlugin.Instance.IsMatchRunning = true;
-                WarHamsPlugin.Instance.ScoreUSA = 0;
-                WarHamsPlugin.Instance.ScoreGER = 0;
-                UnturnedChat.Say("Матч начался! Очки победы генерируются.");
+                int minutes = 60; // По умолчанию матч на час
+                if (command.Length > 1) int.TryParse(command[1], out minutes);
+                
+                WarHamsPlugin.Instance.StartMatch(minutes);
             }
             else if (action == "stop")
             {
-                WarHamsPlugin.Instance.IsMatchRunning = false;
-                UnturnedChat.Say("Матч принудительно остановлен администратором.");
+                WarHamsPlugin.Instance.StopMatch();
             }
         }
     }

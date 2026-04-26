@@ -45,7 +45,7 @@ namespace WarHams
             ClearPlayerCache(player.playerID.steamID.m_SteamID);
         }
 
-        private void OnPlayerDied(PlayerLife sender, EDeathCause cause, EKill ELimb, CSteamID instigator)
+        private void OnPlayerDied(PlayerLife sender, EDeathCause cause, ELimb limb, CSteamID instigator)
         {
             ClearPlayerCache(sender.channel.owner.playerID.steamID.m_SteamID);
         }

@@ -1,11 +1,9 @@
 using Rocket.Core.Plugins;
-using Rocket.Unturned;
 using Rocket.Unturned.Chat;
-using Rocket.Unturned.Player;
 using SDG.Unturned;
+using Steamworks;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 namespace WarHams
@@ -13,162 +11,231 @@ namespace WarHams
     public class WarHamsPlugin : RocketPlugin<WarHamsConfiguration>
     {
         public static WarHamsPlugin Instance { get; private set; }
+        public bool MatchActive { get; private set; }
+        public int ScoreUSA { get; private set; }
+        public int ScoreGER { get; private set; }
+        public System.DateTime MatchEndTime { get; private set; }
 
-        public bool IsMatchRunning = false;
-        public int ScoreUSA = 0;
-        public int ScoreGER = 0;
-        public int MatchTimeRemaining = 0;
-
-        // Кэш для прогресса захвата: Key - ZoneId, Value - прогресс (положительный - USA, отрицательный - GER)
-        private Dictionary<string, int> ZoneCaptureProgress = new Dictionary<string, int>();
+        // Кэш для отслеживания состояния игроков (предотвращает спам в чат)
+        private Dictionary<ulong, string> playerZones = new Dictionary<ulong, string>();
+        private Dictionary<ulong, bool> playerWarned = new Dictionary<ulong, bool>();
 
         protected override void Load()
         {
             Instance = this;
             
-            foreach (var zone in Configuration.Instance.Zones)
-            {
-                ZoneCaptureProgress[zone.Id] = 0;
-                // Инициализируем прогресс в зависимости от владельца
-                if (zone.Owner == "USA") ZoneCaptureProgress[zone.Id] = Configuration.Instance.CaptureTimeSeconds;
-                if (zone.Owner == "GER") ZoneCaptureProgress[zone.Id] = -Configuration.Instance.CaptureTimeSeconds;
-            }
+            // Подписываемся на события для очистки кэша, чтобы не было утечек памяти
+            Provider.onEnemyDisconnected += OnPlayerDisconnected;
+            PlayerLife.onPlayerDied += OnPlayerDied;
 
-            StartCoroutine(CaptureRoutine());
-            StartCoroutine(MatchRoutine());
-            
-            Rocket.Core.Logging.Logger.Log("WarHams Plugin loaded professionally.");
+            StartCoroutine(ZoneUpdateLoop());
+            Rocket.Core.Logging.Logger.Log("WarHams: Система каптов запущена. Код оптимизирован.");
         }
 
         protected override void Unload()
         {
+            Provider.onEnemyDisconnected -= OnPlayerDisconnected;
+            PlayerLife.onPlayerDied -= OnPlayerDied;
             StopAllCoroutines();
             Instance = null;
         }
 
-        // --- Логика захвата точек (Тик каждую секунду) ---
-        private IEnumerator CaptureRoutine()
+        private void OnPlayerDisconnected(SteamPlayer player)
+        {
+            ClearPlayerCache(player.playerID.steamID.m_SteamID);
+        }
+
+        private void OnPlayerDied(PlayerLife sender, EDeathCause cause, EKill ELimb, CSteamID instigator)
+        {
+            ClearPlayerCache(sender.channel.owner.playerID.steamID.m_SteamID);
+        }
+
+        private void ClearPlayerCache(ulong steamId)
+        {
+            playerZones.Remove(steamId);
+            playerWarned.Remove(steamId);
+        }
+
+        // --- Основной цикл расчета зон ---
+        private IEnumerator ZoneUpdateLoop()
         {
             while (true)
             {
                 yield return new WaitForSeconds(1f);
+                if (Configuration.Instance.Zones == null || Configuration.Instance.Zones.Count == 0) continue;
 
-                if (!IsMatchRunning) continue;
-
-                foreach (var zone in Configuration.Instance.Zones)
+                // Подготовка счетчиков для текущего тика
+                var usaCounts = new Dictionary<string, int>();
+                var gerCounts = new Dictionary<string, int>();
+                foreach (var z in Configuration.Instance.Zones)
                 {
-                    int usaCount = 0;
-                    int gerCount = 0;
-                    float radiusSqr = zone.Radius * zone.Radius;
+                    usaCounts[z.Id] = 0;
+                    gerCounts[z.Id] = 0;
+                }
 
-                    // Оптимизированный перебор игроков
-                    foreach (var steamPlayer in Provider.clients)
+                // Единый проход по всем игрокам (максимальная производительность)
+                foreach (var client in Provider.clients)
+                {
+                    var player = client.player;
+                    if (player == null || player.life.isDead) continue;
+                    
+                    ulong steamId = client.playerID.steamID.m_SteamID;
+                    ZoneData currentZone = null;
+
+                    // Поиск зоны, в которой находится игрок
+                    foreach (var zone in Configuration.Instance.Zones)
                     {
-                        if (steamPlayer.player == null || steamPlayer.player.life.isDead) continue;
-
-                        float distSqr = (steamPlayer.player.transform.position - zone.Position).sqrMagnitude;
-                        if (distSqr <= radiusSqr)
+                        if ((player.transform.position - zone.Position).sqrMagnitude <= (zone.Radius * zone.Radius))
                         {
-                            string faction = GetPlayerFaction(steamPlayer.player);
-                            if (faction == "USA") usaCount++;
-                            else if (faction == "GER") gerCount++;
+                            currentZone = zone;
+                            break; // Игрок может быть только в одной зоне одновременно
                         }
                     }
 
-                    ProcessCaptureLogic(zone, usaCount, gerCount);
+                    string currentZoneId = currentZone?.Id;
+                    string previousZoneId = playerZones.ContainsKey(steamId) ? playerZones[steamId] : null;
+
+                    // Логика личных уведомлений о входе на точку
+                    if (currentZoneId != previousZoneId)
+                    {
+                        if (currentZone != null)
+                        {
+                            UnturnedChat.Say(client, $"Вы вошли на точку: {currentZone.Name}", Color.yellow);
+                        }
+                        playerZones[steamId] = currentZoneId;
+                        playerWarned[steamId] = false; // Сбрасываем флаг предупреждения при смене зоны
+                    }
+
+                    // Обработка фракции и влияния на захват
+                    if (currentZone != null)
+                    {
+                        string faction = GetFaction(player);
+
+                        if (faction == "Conflict")
+                        {
+                            if (!playerWarned.ContainsKey(steamId) || !playerWarned[steamId])
+                            {
+                                UnturnedChat.Say(client, "ВНИМАНИЕ: У вас в инвентаре предметы обеих фракций! Выбросьте один, чтобы захватывать точку.", Color.red);
+                                playerWarned[steamId] = true;
+                            }
+                        }
+                        else if (faction == "USA") usaCounts[currentZoneId]++;
+                        else if (faction == "GER") gerCounts[currentZoneId]++;
+                    }
+                }
+
+                // Применение подсчитанных сил к зонам
+                foreach (var zone in Configuration.Instance.Zones)
+                {
+                    UpdateZoneProgress(zone, usaCounts[zone.Id], gerCounts[zone.Id]);
                 }
             }
         }
 
-        private void ProcessCaptureLogic(ZoneData zone, int usaCount, int gerCount)
+        private void UpdateZoneProgress(ZoneData zone, int usa, int ger)
         {
-            if (usaCount > 0 && gerCount > 0) return; // Contested
-            if (usaCount == 0 && gerCount == 0) return; // Empty
-
-            if (!ZoneCaptureProgress.ContainsKey(zone.Id)) ZoneCaptureProgress[zone.Id] = 0;
-
-            int currentProgress = ZoneCaptureProgress[zone.Id];
-            int capTime = Configuration.Instance.CaptureTimeSeconds;
-            string previousOwner = zone.Owner;
-
-            if (usaCount > 0)
+            if (usa > 0 && ger > 0)
             {
-                if (currentProgress < capTime) currentProgress++;
-            }
-            else if (gerCount > 0)
-            {
-                if (currentProgress > -capTime) currentProgress--;
+                if (!zone.IsContested)
+                {
+                    zone.IsContested = true;
+                    // Опционально: можно раскомментировать, если нужно сообщение в глобал о конфликте на точке
+                    // UnturnedChat.Say($"Точка {zone.Name} оспаривается (Contested)!");
+                }
+                return;
             }
 
-            ZoneCaptureProgress[zone.Id] = currentProgress;
+            zone.IsContested = false;
+            int capGoal = Configuration.Instance.CaptureTimeSeconds;
 
-            // Проверка смены владельца
-            if (currentProgress >= capTime && zone.Owner != "USA")
+            if (usa > 0)
             {
-                zone.Owner = "USA";
-                UnturnedChat.Say($"Точка {zone.Name} захвачена силами USA!", Color.blue);
-                Configuration.Save();
+                if (zone.Owner == "USA") return;
+                if (zone.Progress == 0) UnturnedChat.Say($"Силы USA начали захват: {zone.Name}!");
+                
+                zone.Progress += 1;
+                if (zone.Progress >= capGoal)
+                {
+                    zone.Owner = "USA";
+                    zone.Progress = capGoal;
+                    UnturnedChat.Say($"Точка {zone.Name} перешла под контроль USA!", Color.cyan);
+                }
             }
-            else if (currentProgress <= -capTime && zone.Owner != "GER")
+            else if (ger > 0)
             {
-                zone.Owner = "GER";
-                UnturnedChat.Say($"Точка {zone.Name} захвачена силами GER!", Color.red);
-                Configuration.Save();
+                if (zone.Owner == "GER") return;
+                if (zone.Progress == 0) UnturnedChat.Say($"Силы GER начали захват: {zone.Name}!");
+                
+                zone.Progress -= 1;
+                if (zone.Progress <= -capGoal)
+                {
+                    zone.Owner = "GER";
+                    zone.Progress = -capGoal;
+                    UnturnedChat.Say($"Точка {zone.Name} перешла под контроль GER!", Color.red);
+                }
             }
-            else if (currentProgress == 0 && zone.Owner != "Neutral")
-            {
-                zone.Owner = "Neutral";
-                UnturnedChat.Say($"Точка {zone.Name} стала нейтральной!", Color.yellow);
-                Configuration.Save();
-            }
+            // Если на точке никого нет, прогресс остается на том же уровне (не откатывается сам по себе).
+            // Если нужен автооткат, сюда нужно добавить блок else.
         }
 
-        // --- Логика матча и очков (Тик генерации VP) ---
-        private IEnumerator MatchRoutine()
+        // --- Управление матчем ---
+        public void StartMatch(int minutes)
         {
-            while (true)
+            ScoreUSA = 0;
+            ScoreGER = 0;
+            MatchActive = true;
+            MatchEndTime = System.DateTime.Now.AddMinutes(minutes);
+            StartCoroutine(VPGenerationLoop());
+            UnturnedChat.Say($"Матч запущен ({minutes} мин). Цель: {Configuration.Instance.WinScore} VP.", Color.green);
+        }
+
+        public void StopMatch()
+        {
+            MatchActive = false;
+            StopCoroutine(VPGenerationLoop());
+            string winner = ScoreUSA > ScoreGER ? "USA" : (ScoreGER > ScoreUSA ? "GER" : "Ничья");
+            UnturnedChat.Say($"Матч завершен! Победитель: {winner}. Итог: {ScoreUSA} - {ScoreGER}", Color.yellow);
+        }
+
+        private IEnumerator VPGenerationLoop()
+        {
+            while (MatchActive)
             {
-                yield return new WaitForSeconds(Configuration.Instance.VP_GenerationIntervalSeconds);
+                yield return new WaitForSeconds(Configuration.Instance.VP_IntervalSeconds);
+                if (!MatchActive) break;
 
-                if (!IsMatchRunning) continue;
-
+                // Начисление очков происходит ТОЛЬКО ЗДЕСЬ, раз в VP_IntervalSeconds
                 foreach (var zone in Configuration.Instance.Zones)
                 {
                     if (zone.Owner == "USA") ScoreUSA += Configuration.Instance.VP_PerZone;
                     else if (zone.Owner == "GER") ScoreGER += Configuration.Instance.VP_PerZone;
                 }
 
-                CheckWinCondition();
-            }
-        }
+                if (ScoreUSA >= Configuration.Instance.WinScore || ScoreGER >= Configuration.Instance.WinScore)
+                {
+                    StopMatch();
+                    break;
+                }
 
-        private void CheckWinCondition()
-        {
-            int winScore = Configuration.Instance.ScoreToWin;
-            if (ScoreUSA >= winScore)
-            {
-                UnturnedChat.Say($"ПОБЕДА USA! Со счетом {ScoreUSA} против {ScoreGER}", Color.blue);
-                IsMatchRunning = false;
-            }
-            else if (ScoreGER >= winScore)
-            {
-                UnturnedChat.Say($"ПОБЕДА GER! Со счетом {ScoreGER} против {ScoreUSA}", Color.red);
-                IsMatchRunning = false;
+                if (System.DateTime.Now >= MatchEndTime)
+                {
+                    StopMatch();
+                    break;
+                }
             }
         }
 
         // --- Утилиты ---
-        public string GetPlayerFaction(Player player)
+        public string GetFaction(Player player)
         {
-            if (HasItem(player, Configuration.Instance.USA_KeyItemID)) return "USA";
-            if (HasItem(player, Configuration.Instance.GER_KeyItemID)) return "GER";
-            return "Neutral";
-        }
+            // Используем нативный инвентарь игрока для оптимизации (без обертки UnturnedPlayer)
+            bool hasUsa = player.inventory.search(Configuration.Instance.USA_KeyItemID, true, true).Count > 0;
+            bool hasGer = player.inventory.search(Configuration.Instance.GER_KeyItemID, true, true).Count > 0;
 
-        private bool HasItem(Player player, ushort itemId)
-        {
-            var search = player.inventory.search(itemId, true, true);
-            return search != null && search.Count > 0;
+            if (hasUsa && hasGer) return "Conflict";
+            if (hasUsa) return "USA";
+            if (hasGer) return "GER";
+            return "Neutral";
         }
     }
 }

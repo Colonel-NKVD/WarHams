@@ -1,33 +1,27 @@
 name: Build WarHams
 
-on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+on: [push]
 
 jobs:
   build:
-    runs-on: windows-latest
-
+    runs-on: windows-2022
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@v1
 
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
 
-    - name: Setup NuGet
-      uses: NuGet/setup-nuget@v2
-
-    - name: Restore NuGet packages
+    - name: Restore NuGet Packages
       run: nuget restore WarHams.csproj
 
-    - name: Build Plugin
-      run: msbuild WarHams.csproj /p:Configuration=Release /p:Platform="Any CPU"
+    - name: Build
+      run: msbuild WarHams.csproj /p:Configuration=Release /p:TargetFramework=net48
 
-    - name: Upload Artifact
+    - name: Upload DLL
       uses: actions/upload-artifact@v4
       with:
-        name: WarHams-Plugin
+        name: WarHams-Release
         path: bin/Release/net48/WarHams.dll

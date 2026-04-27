@@ -11,10 +11,11 @@ namespace WarHams
         public string Name;
         public Vector3 Position;
         public float Radius;
-        public string Owner; // USA, GER, Neutral
+        public string Owner; 
         
-        [XmlIgnore] public float Progress; // Положительное - USA, отрицательное - GER
+        [XmlIgnore] public float Progress; 
         [XmlIgnore] public bool IsContested;
+        [XmlIgnore] public string CurrentCapper = "None"; // Отслеживание текущего захватчика
     }
 
     public class WarHamsConfiguration : IRocketPluginConfiguration
@@ -25,8 +26,6 @@ namespace WarHams
         public int VP_IntervalSeconds;
         public int VP_PerZone;
         public int WinScore;
-        public string MessageColorUSA;
-        public string MessageColorGER;
         
         public List<ZoneData> Zones;
 
@@ -38,8 +37,6 @@ namespace WarHams
             VP_IntervalSeconds = 30;
             VP_PerZone = 10;
             WinScore = 1000;
-            MessageColorUSA = "cyan";
-            MessageColorGER = "orange";
             Zones = new List<ZoneData>();
         }
     }

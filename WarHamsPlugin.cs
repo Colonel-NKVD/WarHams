@@ -171,7 +171,7 @@ namespace WarHams
                 {
                     zone.Owner = "GER";
                     zone.Progress = -capGoal;
-                    UnturnedChat.Say($"Точка {zone.Name} перешла под контроль GER!", Color.darkRed);
+                    UnturnedChat.Say($"Точка {zone.Name} перешла под контроль GER!", Color.Yellow);
                 }
             }
             // Никого на точке

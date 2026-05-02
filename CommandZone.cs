@@ -14,7 +14,9 @@ namespace WarHams.Commands
         public string Help => "Управление зонами захвата";
         public string Syntax => "<create/remove/list/setowner>";
         public List<string> Aliases => new List<string>();
-        public List<string> Permissions => new List<string> { "warhams.admin" };
+        
+        // Меняем базовое право, чтобы команда открывалась для игроков
+        public List<string> Permissions => new List<string> { "warhams.zone" };
 
         public void Execute(IRocketPlayer caller, string[] command)
         {
@@ -27,11 +29,21 @@ namespace WarHams.Commands
 
             if (command.Length < 1)
             {
-                UnturnedChat.Say(caller, "Ошибка! Используй: /zone <create/remove/list/setowner>", Color.red);
+                UnturnedChat.Say(caller, "Используй: /zone <create/remove/list/setowner>", Color.red);
                 return;
             }
 
             string subCommand = command[0].ToLower();
+
+            // ВНУТРЕННЯЯ ПРОВЕРКА ПРАВ: Если это не list, требуем админку
+            if (subCommand == "create" || subCommand == "remove" || subCommand == "setowner")
+            {
+                if (!caller.HasPermission("warhams.admin"))
+                {
+                    UnturnedChat.Say(caller, "Ошибка! У вас нет доступа к управлению зонами.", Color.red);
+                    return;
+                }
+            }
 
             switch (subCommand)
             {
@@ -107,7 +119,7 @@ namespace WarHams.Commands
 
                         targetZone.Owner = newOwner;
                         targetZone.Progress = (newOwner == "USA") ? WarHamsPlugin.Instance.Configuration.Instance.CaptureTimeSeconds : (newOwner == "GER" ? -WarHamsPlugin.Instance.Configuration.Instance.CaptureTimeSeconds : 0);
-                        targetZone.CurrentCapper = "None"; // Сбрасываем захват
+                        targetZone.CurrentCapper = "None";
                         WarHamsPlugin.Instance.Configuration.Save();
                         UnturnedChat.Say(caller, $"Владелец зоны {targetZone.Name} принудительно изменен на {newOwner}", Color.green);
                     }
